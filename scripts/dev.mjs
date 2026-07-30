@@ -1,0 +1,32 @@
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { build } from "vite";
+
+const bundle = "dist/baiakidle-bridge.user.js";
+const watcher = await build({ configFile: "vite.config.ts", build: { watch: {} } });
+const server = createServer(async (request, response) => {
+  if (request.url?.split("?")[0] !== "/baiakidle-bridge.user.js") {
+    response.writeHead(404).end();
+    return;
+  }
+  try {
+    response.writeHead(200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*"
+    }).end(await readFile(bundle));
+  } catch {
+    response.writeHead(503).end("bundle not ready");
+  }
+});
+
+server.listen(8947, "127.0.0.1", () => {
+  console.log("[baiakidle-mcp] http://127.0.0.1:8947/baiakidle-bridge.user.js");
+});
+
+async function close() {
+  await watcher.close();
+  server.close();
+}
+process.once("SIGINT", close);
+process.once("SIGTERM", close);
