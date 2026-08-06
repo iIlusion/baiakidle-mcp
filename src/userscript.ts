@@ -1,27 +1,31 @@
 import { createSocketRole, observeSocket, type SocketRole } from "./socket-role";
 
 declare const unsafeWindow: Window & typeof globalThis;
-declare function GM_xmlhttpRequest(details: {
-  method: string;
-  url: string;
-  headers?: Record<string, string>;
-  data?: string;
-  onload?: (response: { responseText: string; status: number }) => void;
-  onerror?: () => void;
-}): void;
 
 const BRIDGE = "ws://127.0.0.1:8945/browser";
-const BRIDGE_HTTP = "http://127.0.0.1:8945";
 const page = unsafeWindow;
+const runtimePage = page as typeof page & {
+  __BAIAKIDLE_MCP_MONITOR__?: true;
+  __BAIAKIDLE_MCP_BRIDGE__?: unknown;
+};
+if (runtimePage.__BAIAKIDLE_MCP_MONITOR__ || runtimePage.__BAIAKIDLE_MCP_BRIDGE__) {
+  console.info("[BaiakIdle monitor] duplicate userscript ignored");
+} else {
+Object.defineProperty(runtimePage, "__BAIAKIDLE_MCP_MONITOR__", {
+  configurable: true,
+  value: true
+});
 const monitored = /^wss?:\/\/(?:rt\d+\.)?baiakidle\.com(?:\/|$)/i;
 const clip = (value: unknown) => String(value ?? "").slice(0, 20_000);
-const MAX_BINARY_BYTES = 256 * 1024;
+const MAX_BINARY_BYTES = 64 * 1024;
 const sockets = new Map<string, WebSocket>();
 const socketRoles = new Map<WebSocket, SocketRole>();
 const monitoredSocketInstances = new WeakSet<WebSocket>();
-const pendingEvents: string[] = [];
 let bridgeSocket: WebSocket | undefined;
-let httpFlushPending = false;
+let droppedSocketEvents = 0;
+let reconnectDelay = 1_000;
+const eventBatch: Record<string, unknown>[] = [];
+let eventFlushTimer: number | undefined;
 
 type SocketData = string | Blob | ArrayBufferLike | ArrayBufferView;
 type CapturedSocketEvent =
@@ -64,23 +68,31 @@ function classifySocket(url: string, socket: WebSocket, bytes: Uint8Array): void
   }
 }
 
-function emit(event: Record<string, unknown>): void {
-  const message = JSON.stringify({
-    type: "event",
-    event: {
-      ...event,
-      time: new Date().toISOString(),
-      page: page.location.href
-    }
-  });
-  if (bridgeSocket?.readyState === 1 && bridgeSocket.bufferedAmount < 4 * 1024 * 1024) {
-    bridgeSocket.send(message);
-  } else {
-    pendingEvents.push(message);
-    if (pendingEvents.length > 500) pendingEvents.shift();
-  }
+function collectorOnline(): boolean {
+  return bridgeSocket?.readyState === WebSocket.OPEN && bridgeSocket.bufferedAmount < 4 * 1024 * 1024;
 }
 
+function flushEvents(): void {
+  if (eventFlushTimer !== undefined) page.clearTimeout(eventFlushTimer);
+  eventFlushTimer = undefined;
+  if (!eventBatch.length) return;
+  if (!collectorOnline()) {
+    eventBatch.length = 0;
+    return;
+  }
+  bridgeSocket!.send(JSON.stringify({ type: "events", events: eventBatch.splice(0) }));
+}
+
+function emit(event: Record<string, unknown>): void {
+  if (!collectorOnline()) return;
+  eventBatch.push({
+    ...event,
+    time: new Date().toISOString(),
+    page: page.location.href
+  });
+  if (event.requestId || eventBatch.length >= 50) flushEvents();
+  else eventFlushTimer ??= page.setTimeout(flushEvents, 50);
+}
 async function encodeBinary(value: Blob | ArrayBufferLike | ArrayBufferView): Promise<Record<string, unknown>> {
   const bytes = await toBytes(value);
 
@@ -101,22 +113,67 @@ async function encodeBinary(value: Blob | ArrayBufferLike | ArrayBufferView): Pr
   };
 }
 
+/** Skip combat flood in MCP capture (game still receives these; helper can drop fx separately). */
+function shouldSkipCapture(bytes: Uint8Array): boolean {
+  const b0 = bytes[0];
+  // Colyseus ROOM_STATE (0x0e) / ROOM_STATE_PATCH (0x0f) — hundreds/s in combat.
+  if (b0 === 0x0e || b0 === 0x0f) return true;
+  // ROOM_DATA (0x0d): drop visual/combat log room messages.
+  if (b0 === 0x0d && bytes.length >= 4) {
+    // fixstr "fx" = a2 66 78, "combatlog" starts a9 63 6f...
+    if (bytes[1] === 0xa2 && bytes[2] === 0x66 && bytes[3] === 0x78) return true; // fx
+    if (bytes[1] === 0xa9 && bytes[2] === 0x63 && bytes[3] === 0x6f) return true; // combatlog
+  }
+  return false;
+}
+
 function handleSocketEvent(url: string, socket: WebSocket, event: CapturedSocketEvent): void {
   if (event.type === "message") {
     if (typeof event.data === "string") {
-      classifySocket(url, socket, new TextEncoder().encode(event.data));
+      const encoded = new TextEncoder().encode(event.data);
+      classifySocket(url, socket, encoded);
+      if (shouldSkipCapture(encoded)) {
+        droppedSocketEvents += 1;
+        return;
+      }
+      if (!collectorOnline()) {
+        droppedSocketEvents += 1;
+        return;
+      }
       emit({ type: "ws_message", url, encoding: "text", data: clip(event.data) });
       return;
     }
     void toBytes(event.data).then(bytes => {
       classifySocket(url, socket, bytes);
+      if (shouldSkipCapture(bytes)) {
+        droppedSocketEvents += 1;
+        return;
+      }
+      if (!collectorOnline()) {
+        droppedSocketEvents += 1;
+        return;
+      }
       return encodeBinary(bytes);
-    }).then(payload => emit({ type: "ws_message", url, ...payload }));
+    }).then(payload => {
+      if (payload) emit({ type: "ws_message", url, ...payload });
+    });
   } else if (event.type === "send") {
+    if (!collectorOnline()) {
+      droppedSocketEvents += 1;
+      return;
+    }
     if (typeof event.data === "string") {
       emit({ type: "ws_send", url, encoding: "text", data: clip(event.data) });
     } else {
-      void encodeBinary(event.data).then(payload => emit({ type: "ws_send", url, ...payload }));
+      void toBytes(event.data).then(bytes => {
+        if (shouldSkipCapture(bytes)) {
+          droppedSocketEvents += 1;
+          return;
+        }
+        return encodeBinary(bytes);
+      }).then(payload => {
+        if (payload) emit({ type: "ws_send", url, ...payload });
+      });
     }
   } else if (event.type === "close") {
     sockets.delete(url);
@@ -297,11 +354,13 @@ function monitorLootPouch(): void {
   const capacity = Number(match[2]);
   const full = capacity > 0 && current >= capacity;
   const sellButton = page.document.getElementById("sell-all") as HTMLButtonElement | null;
-  const cooldown = Boolean(sellButton?.disabled || sellButton?.classList.contains("cd"));
-  const status = `${current}/${capacity}:${cooldown}`;
+  // Class `cd` = real sell timer. Disabled alone = no items to sell (feature still available).
+  const sellCooldown = Boolean(sellButton?.classList.contains("cd"));
+  const canSell = Boolean(sellButton && !sellButton.disabled && !sellCooldown);
+  const status = `${current}/${capacity}:${sellCooldown}:${canSell}`;
   if (status === lastLootPouchStatus) return;
   lastLootPouchStatus = status;
-  emit({ type: "loot_pouch_status", current, capacity, full, cooldown });
+  emit({ type: "loot_pouch_status", current, capacity, full, sellCooldown, canSell });
 }
 
 function monitorGloothBag(): void {
@@ -402,58 +461,20 @@ function handleCommand(command: BridgeCommand): void {
   }
 }
 
-function flushHttpFallback(): void {
-  if (bridgeSocket?.readyState === 1 || httpFlushPending || pendingEvents.length === 0) return;
-  const messages = pendingEvents.splice(0, 100);
-  const events = messages.map(message =>
-    (JSON.parse(message) as { event: Record<string, unknown> }).event
-  );
-  httpFlushPending = true;
-  const retry = () => {
-    pendingEvents.unshift(...messages);
-    if (pendingEvents.length > 500) pendingEvents.splice(0, pendingEvents.length - 500);
-    httpFlushPending = false;
-  };
-  GM_xmlhttpRequest({
-    method: "POST",
-    url: `${BRIDGE_HTTP}/events`,
-    headers: { "Content-Type": "application/json" },
-    data: JSON.stringify(events),
-    onload: response => {
-      if (response.status !== 202) retry();
-      else httpFlushPending = false;
-    },
-    onerror: retry
-  });
-}
-
-function pollHttpFallback(): void {
-  if (bridgeSocket?.readyState === 1) return;
-  GM_xmlhttpRequest({
-    method: "GET",
-    url: `${BRIDGE_HTTP}/commands`,
-    onload: response => {
-      if (response.status !== 200) return;
-      try {
-        for (const command of JSON.parse(response.responseText) as BridgeCommand[]) {
-          handleCommand(command);
-        }
-      } catch {}
-    }
-  });
-}
-
 function connectBridge(): void {
   const socket = new WebSocket(BRIDGE);
   bridgeSocket = socket;
   socket.addEventListener("open", () => {
+    reconnectDelay = 1_000;
+    const dropped = droppedSocketEvents;
+    droppedSocketEvents = 0;
     emit({
       type: "ready",
       transport: "websocket",
       hook: "unsafeWindow-direct",
-      bootstrap: Boolean(earlyHook)
+      bootstrap: Boolean(earlyHook),
+      droppedWhileOffline: dropped
     });
-    for (const message of pendingEvents.splice(0)) socket.send(message);
     console.info("[BaiakIdle monitor] bridge connected", BRIDGE);
   });
   socket.addEventListener("message", event => {
@@ -467,27 +488,22 @@ function connectBridge(): void {
       console.error("[BaiakIdle monitor] invalid bridge command", error);
     }
   });
-  socket.addEventListener("close", () => {
+  socket.addEventListener("close", event => {
     if (bridgeSocket === socket) bridgeSocket = undefined;
-    setTimeout(connectBridge, 1_000);
+    if (event.code === 4002) {
+      console.info("[BaiakIdle monitor] duplicate bridge connection stopped");
+      return;
+    }
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(reconnectDelay * 2, 30_000);
+    setTimeout(connectBridge, delay);
   });
   socket.addEventListener("error", () => socket.close());
 }
 
 setInterval(monitorLootPouch, 500);
 setInterval(monitorGloothBag, 500);
-setInterval(flushHttpFallback, 500);
-setInterval(pollHttpFallback, 1_000);
 monitorLootPouch();
 monitorGloothBag();
 connectBridge();
-setTimeout(() => {
-  if (bridgeSocket?.readyState !== 1) {
-    emit({
-      type: "ready",
-      transport: "http-batch-fallback",
-      hook: "unsafeWindow-direct",
-      bootstrap: Boolean(earlyHook)
-    });
-  }
-}, 1_000);
+}

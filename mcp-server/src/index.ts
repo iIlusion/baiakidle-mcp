@@ -21,7 +21,7 @@ const tools = [
   },
   {
     name: "clear_events",
-    description: "Limpa os eventos capturados em memória e no arquivo local.",
+    description: "Limpa os eventos capturados em memória.",
     inputSchema: { type: "object", properties: {} }
   },
   {

@@ -1,13 +1,3 @@
-// ==UserScript==
-// @name BaiakIdle MCP Bridge
-// @namespace baiakidle-page-bridge
-// @version 1.0.0
-// @description Local page and WebSocket bridge for Codex MCP tools.
-// @match https://baiakidle.com/jogar/
-// @match https://baiakidle.com/jogar/*
-// @run-at document-start
-// @grant unsafeWindow
-// ==/UserScript==
 (function() {
   "use strict";
   const gameplaySignals = [
@@ -100,23 +90,10 @@
       });
       if (event.requestId || eventBatch.length >= 50) flushEvents();
       else eventFlushTimer ??= page.setTimeout(flushEvents, 50);
-    }, shouldSkipCapture = function(bytes) {
-      const b0 = bytes[0];
-      if (b0 === 14 || b0 === 15) return true;
-      if (b0 === 13 && bytes.length >= 4) {
-        if (bytes[1] === 162 && bytes[2] === 102 && bytes[3] === 120) return true;
-        if (bytes[1] === 169 && bytes[2] === 99 && bytes[3] === 111) return true;
-      }
-      return false;
     }, handleSocketEvent = function(url, socket, event) {
       if (event.type === "message") {
         if (typeof event.data === "string") {
-          const encoded = new TextEncoder().encode(event.data);
-          classifySocket(url, socket, encoded);
-          if (shouldSkipCapture(encoded)) {
-            droppedSocketEvents += 1;
-            return;
-          }
+          classifySocket(url, socket, new TextEncoder().encode(event.data));
           if (!collectorOnline()) {
             droppedSocketEvents += 1;
             return;
@@ -126,10 +103,6 @@
         }
         void toBytes(event.data).then((bytes) => {
           classifySocket(url, socket, bytes);
-          if (shouldSkipCapture(bytes)) {
-            droppedSocketEvents += 1;
-            return;
-          }
           if (!collectorOnline()) {
             droppedSocketEvents += 1;
             return;
@@ -146,15 +119,7 @@
         if (typeof event.data === "string") {
           emit({ type: "ws_send", url, encoding: "text", data: clip(event.data) });
         } else {
-          void toBytes(event.data).then((bytes) => {
-            if (shouldSkipCapture(bytes)) {
-              droppedSocketEvents += 1;
-              return;
-            }
-            return encodeBinary(bytes);
-          }).then((payload) => {
-            if (payload) emit({ type: "ws_send", url, ...payload });
-          });
+          void encodeBinary(event.data).then((payload) => emit({ type: "ws_send", url, ...payload }));
         }
       } else if (event.type === "close") {
         sockets.delete(url);
@@ -231,12 +196,11 @@
       const capacity = Number(match[2]);
       const full = capacity > 0 && current >= capacity;
       const sellButton = page.document.getElementById("sell-all");
-      const sellCooldown = Boolean(sellButton?.classList.contains("cd"));
-      const canSell = Boolean(sellButton && !sellButton.disabled && !sellCooldown);
-      const status = `${current}/${capacity}:${sellCooldown}:${canSell}`;
+      const cooldown = Boolean(sellButton?.disabled || sellButton?.classList.contains("cd"));
+      const status = `${current}/${capacity}:${cooldown}`;
       if (status === lastLootPouchStatus) return;
       lastLootPouchStatus = status;
-      emit({ type: "loot_pouch_status", current, capacity, full, sellCooldown, canSell });
+      emit({ type: "loot_pouch_status", current, capacity, full, cooldown });
     }, monitorGloothBag = function() {
       const counter = /^\s*(\d+)\s*\/\s*(\d+)/.exec(
         page.document.getElementById("inv-count")?.textContent ?? ""

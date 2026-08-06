@@ -1,6 +1,5 @@
 node_modules/
 mcp-server/node_modules/
-mcp-server/data/
 *.log
 .env
 .env.*

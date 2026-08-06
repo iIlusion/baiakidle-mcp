@@ -12,7 +12,8 @@
     "build": "npm run build:bridge && npm run build:mcp",
     "build:bridge": "vite build && node scripts/add-userscript-banner.mjs",
     "build:mcp": "npm --prefix mcp-server run build",
-    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix mcp-server run typecheck"
+    "typecheck": "tsc -p tsconfig.json --noEmit && npm --prefix mcp-server run typecheck",
+    "test": "npm --prefix mcp-server test"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

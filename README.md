@@ -21,7 +21,7 @@ Bridge local 127.0.0.1:8945
 Codex / outro cliente MCP
 ```
 
-A porta `8945` aceita o WebSocket da extensão e possui fallback HTTP para eventos e comandos. Nada precisa ser exposto na rede: o servidor escuta apenas em `127.0.0.1`.
+A comunicação entre a extensão e o servidor usa exclusivamente WebSocket em `127.0.0.1:8945/browser`. Não há fallback HTTP nem exposição na rede.
 
 ## Requisitos
 
@@ -64,7 +64,7 @@ No Windows, use barras `/` ou duplique as barras invertidas no TOML. O executáv
 | --- | --- |
 | `bridge_status` | Estado da bridge, porta, quantidade de eventos e fila de comandos |
 | `list_events` | Eventos recentes da página, fetch/XHR, inventário e WebSockets |
-| `clear_events` | Limpa memória e arquivo local de capturas |
+| `clear_events` | Limpa as capturas mantidas em memória |
 | `get_page_snapshot` | HTML, texto visível, links, formulários, scripts e viewport atuais |
 | `inspect_selector` | Elementos, texto, HTML e posição encontrados por seletor CSS |
 | `reload_page` | Recarrega a página monitorada |
@@ -103,16 +103,9 @@ npm run typecheck       # valida os dois projetos TypeScript
 
 ## Eventos e configuração
 
-Por padrão, as últimas 2.000 capturas são mantidas e persistidas em `mcp-server/data/events.json`. A pasta é ignorada pelo Git.
+As últimas 2.000 capturas ficam somente em memória e são descartadas quando o servidor MCP encerra. Nenhum pacote é gravado em arquivo.
 
-Variáveis opcionais:
-
-```text
-BAIAKIDLE_BRIDGE_PORT=8945
-BAIAKIDLE_EVENT_FILE=C:/caminho/privado/events.json
-```
-
-Para diagnosticar apenas o transporte local, abra `http://127.0.0.1:8945/status` enquanto o servidor estiver ativo.
+A porta pode ser alterada com `BAIAKIDLE_BRIDGE_PORT`; mantenha o mesmo valor no userscript. Para diagnosticar apenas o transporte local, abra `http://127.0.0.1:8945/status` enquanto o servidor estiver ativo.
 
 ## Solução de problemas
 
@@ -133,7 +126,7 @@ A bridge precisa executar em `document-start`. Confirme que o script está ativa
 
 ## Segurança e privacidade
 
-As capturas podem conter identificadores de sessão, conteúdo da página e dados enviados pelo jogo. Não publique `mcp-server/data/events.json`, logs ou dumps do navegador. O `.gitignore` já protege esses caminhos, mas revise sempre `git status` antes de fazer commit.
+As capturas em memória podem conter identificadores de sessão, conteúdo da página e dados enviados pelo jogo. Não publique logs ou dumps do navegador e revise sempre `git status` antes de fazer commit.
 
 `send_raw_packet` modifica a sessão atual. Use apenas na sua própria conta, com pacotes que você compreende, e respeite as regras do jogo. Este é um projeto independente, sem vínculo oficial com BaiakIdle.
 

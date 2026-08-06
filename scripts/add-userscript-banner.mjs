@@ -9,9 +9,7 @@ const banner = `// ==UserScript==
 // @version 1.0.0
 // @description Local page and WebSocket bridge for Codex MCP tools.
 ${common}
-// @grant GM_xmlhttpRequest
 // @grant unsafeWindow
-// @connect 127.0.0.1
 // ==/UserScript==
 `;
 const devLoader = `// ==UserScript==
@@ -29,6 +27,11 @@ ${common}
 
 (() => {
   const page = unsafeWindow;
+  if (page.__BAIAKIDLE_MCP_MONITOR__ || page.__BAIAKIDLE_MCP_BRIDGE__) {
+    console.info("[BaiakIdle MCP DEV] duplicate userscript ignored");
+    return;
+  }
+  page.__BAIAKIDLE_MCP_MONITOR__ = true;
   const monitored = /^wss?:\\/\\/(?:rt\\d+\\.)?baiakidle\\.com(?:\\/|$)/i;
 
   if (!page.__BAIAKIDLE_EARLY_WS__) {
@@ -79,12 +82,17 @@ ${common}
     url: "http://127.0.0.1:8947/baiakidle-bridge.user.js?t=" + Date.now(),
     onload: response => {
       if (response.status !== 200) {
+        delete page.__BAIAKIDLE_MCP_MONITOR__;
         console.error("[BaiakIdle MCP DEV] bundle HTTP", response.status);
         return;
       }
+      delete page.__BAIAKIDLE_MCP_MONITOR__;
       eval(response.responseText + "\\n//# sourceURL=baiakidle-mcp.dev.js");
     },
-    onerror: error => console.error("[BaiakIdle MCP DEV] run npm run dev", error)
+    onerror: error => {
+      delete page.__BAIAKIDLE_MCP_MONITOR__;
+      console.error("[BaiakIdle MCP DEV] run npm run dev", error);
+    }
   });
 })();
 `;

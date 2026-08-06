@@ -18,6 +18,7 @@ const gameplaySignals = [
   "gold",
   "citypos"
 ];
+const decoder = new TextDecoder();
 
 export function createSocketRole(): SocketRole {
   return { score: 0, messages: 0, signals: new Set(), chat: false };
@@ -32,13 +33,13 @@ function messageType(bytes: Uint8Array): string {
   else if (prefix === 0xd9) { length = bytes[2]; offset = 3; }
   else if (prefix === 0xda) { length = (bytes[2] << 8) | bytes[3]; offset = 4; }
   else return "";
-  return new TextDecoder().decode(bytes.subarray(offset, offset + length)).toLowerCase();
+  return decoder.decode(bytes.subarray(offset, offset + length)).toLowerCase();
 }
 
 export function observeSocket(role: SocketRole, bytes: Uint8Array): void {
-  const sample = new TextDecoder().decode(bytes.subarray(0, 16_384)).toLowerCase();
   role.messages += 1;
   role.score += 1;
+  if (role.chat || role.signals.size > 0) return;
 
   if (messageType(bytes) === "chat") {
     role.chat = true;
@@ -47,6 +48,7 @@ export function observeSocket(role: SocketRole, bytes: Uint8Array): void {
     return;
   }
 
+  const sample = decoder.decode(bytes.subarray(0, 4_096)).toLowerCase();
   for (const signal of gameplaySignals) {
     if (sample.includes(signal) && !role.signals.has(signal)) {
       role.signals.add(signal);
