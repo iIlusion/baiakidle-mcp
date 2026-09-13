@@ -1,49 +1,66 @@
-# BaiakIdle MCP
+# BaiakIdle MCP Bridge
 
-Bridge local para analisar a página do [BaiakIdle](https://baiakidle.com/jogar/) com um cliente MCP como o Codex. O projeto reúne somente:
+Uma bridge local para inspecionar a página do [BaiakIdle](https://baiakidle.com/jogar/) usando um cliente MCP, como o Codex.
 
-- uma extensão Tampermonkey que observa a página, fetch/XHR e WebSockets desde a criação;
-- um servidor MCP Node.js que expõe as capturas e comandos ao cliente.
+O projeto tem duas partes:
 
-A automação de jogo fica no projeto separado [baiakidle-helper](https://github.com/iIlusion/baiakidle-helper).
+- uma extensão Chrome/Brave que observa o WebSocket do jogo dentro de `/jogar/`;
+- um servidor Node.js que expõe essa sessão como ferramentas MCP via stdio.
+
+A automação do jogo fica no projeto separado [BaiakIdle Helper](https://github.com/iIlusion/baiakidle-helper). Esta bridge cuida do transporte, da inspeção e das chamadas que você solicitar.
 
 ## Como funciona
 
+A página não abre conexão com o localhost. O hook roda no `MAIN world`, envia apenas eventos internos para o content script e o service worker mantém a conexão local:
+
 ```text
-BaiakIdle no navegador
-        │
-        │ userscript: DOM + fetch/XHR + WebSocket
-        ▼
-Bridge local 127.0.0.1:8945
-        │
-        │ MCP via stdio
-        ▼
-Codex / outro cliente MCP
+/jogar/ (page.js, MAIN)
+    ring buffer + WebSocket do jogo
+              │ CustomEvent
+content.js (ISOLATED)
+              │ runtime port
+background.js (service worker)
+              │ ws://127.0.0.1:8945/browser
+MCP Node.js (stdio)
 ```
 
-A comunicação entre a extensão e o servidor usa exclusivamente WebSocket em `127.0.0.1:8945/browser`. Não há fallback HTTP nem exposição na rede.
+Os pacotes são mantidos em um buffer circular na própria página. O MCP faz pull quando uma ferramenta é chamada; não há push contínuo, telemetria ou gravação de capturas em arquivo.
 
 ## Requisitos
 
 - Node.js 20 ou mais recente;
 - npm;
-- Tampermonkey com **Allow User Scripts** habilitado;
-- Codex ou outro cliente compatível com MCP via stdio.
+- Chrome ou Brave com o modo desenvolvedor habilitado;
+- Codex ou outro cliente compatível com servidores MCP via stdio.
 
 ## Instalação
+
+### 1. Baixe e compile
+
+No PowerShell, Prompt de Comando ou terminal:
 
 ```bash
 git clone https://github.com/iIlusion/baiakidle-mcp.git
 cd baiakidle-mcp
-npm install
-npm --prefix mcp-server install
+npm ci
+npm --prefix mcp-server ci
 npm run build
 ```
 
-Depois:
+O build gera o servidor em `mcp-server/dist/`, os bundles de userscript em `dist/` e o `page.js` usado pela extensão.
 
-1. [Instale a bridge no Tampermonkey](https://raw.githubusercontent.com/iIlusion/baiakidle-mcp/main/dist/baiakidle-bridge.user.js).
-2. Adicione o servidor ao arquivo `config.toml` do Codex, usando o caminho absoluto da sua cópia:
+### 2. Carregue a extensão
+
+1. Abra `chrome://extensions` (ou `brave://extensions`).
+2. Ative **Modo desenvolvedor**.
+3. Clique em **Carregar sem compactação**.
+4. Selecione a pasta `mcp-extension` dentro do repositório.
+
+O `page.js` dessa pasta é gerado pelo build. Não o edite manualmente; altere `src/userscript.ts` e compile de novo.
+
+### 3. Configure o cliente MCP
+
+Adicione o servidor ao `config.toml` do Codex. Troque o caminho pelo local absoluto do clone:
 
 ```toml
 [mcp_servers.baiakidle-page-bridge]
@@ -52,83 +69,92 @@ args = ["C:/caminho/baiakidle-mcp/mcp-server/dist/index.js"]
 startup_timeout_sec = 60
 ```
 
-3. Reinicie o Codex por completo.
-4. Abra ou recarregue `https://baiakidle.com/jogar/`.
-5. Confirme no console do navegador: `[BaiakIdle monitor] bridge connected`.
+No Windows, use `/` no caminho ou escape as barras invertidas no TOML. Reinicie o Codex depois de salvar a configuração.
 
-No Windows, use barras `/` ou duplique as barras invertidas no TOML. O executável indicado em `args` é gerado por `npm run build`.
+### 4. Abra o jogo
 
-## Ferramentas MCP
+Abra ou recarregue completamente `https://baiakidle.com/jogar/`. No console da página, a bridge ativa informa a versão e `ext-transport`.
 
-| Ferramenta | Finalidade |
+Para uma checagem rápida, abra `http://127.0.0.1:8945/status`. O campo `browserConnected` deve ficar `true` com o jogo aberto.
+
+## Ferramentas disponíveis
+
+| Ferramenta | O que faz |
 | --- | --- |
-| `bridge_status` | Estado da bridge, porta, quantidade de eventos e fila de comandos |
-| `list_events` | Eventos recentes da página, fetch/XHR, inventário e WebSockets |
-| `clear_events` | Limpa as capturas mantidas em memória |
-| `get_page_snapshot` | HTML, texto visível, links, formulários, scripts e viewport atuais |
-| `inspect_selector` | Elementos, texto, HTML e posição encontrados por seletor CSS |
-| `reload_page` | Recarrega a página monitorada |
-| `send_raw_packet` | Envia bytes Base64 pelo WebSocket de gameplay identificado |
+| `bridge_status` | Mostra o estado do transporte e um snapshot leve da página. |
+| `probe` | Combina HUD, pacotes recentes e uma consulta DOM opcional. |
+| `packets_get` | Lê o buffer circular de pacotes. Alias: `list_events`. |
+| `packets_clear` | Limpa o buffer da página. Alias: `clear_events`. |
+| `list_packet_headers` | Lista o catálogo local de mensagens Colyseus. |
+| `dom_query` | Consulta elementos por seletor CSS. Alias: `inspect_selector`. |
+| `dom_eval` | Executa JavaScript no contexto da página. |
+| `get_page_snapshot` | Retorna URL, HUD e sockets observados, sem HTML completo. |
+| `reload_page` | Recarrega a página do jogo. |
+| `send_packet` | Envia um pacote Base64 pelo socket de gameplay. Alias: `send_raw_packet`. |
 
-Os frames binários são registrados em Base64. A bridge classifica automaticamente sockets de chat e gameplay pelos sinais observados, então não depende de um hostname fixo como `rt3` ou `rt4`.
+Exemplo de filtro para `packets_get`:
+
+```json
+{ "limit": 30, "msgTypes": ["notify", "sellall", "sellcd"], "categories": ["economy"] }
+```
+
+O catálogo reconhece nomes de mensagem Colyseus depois do frame `0x0d` (`ROOM_DATA`). A bridge classifica os sockets pelos sinais observados, sem depender de um hostname fixo como `rt3` ou `rt4`.
+
+## Atualização
+
+Depois de atualizar o clone:
+
+```bash
+git pull
+npm ci
+npm --prefix mcp-server ci
+npm run build
+```
+
+Na página de extensões, clique em **Recarregar** na BaiakIdle MCP Bridge e faça uma recarga completa do jogo. Se o cliente MCP ainda estiver aberto, reinicie-o quando o executável do servidor tiver mudado.
 
 ## Desenvolvimento
 
-Os userscripts gerados ficam exclusivamente em `dist/`:
-
-- `dist/baiakidle-bridge.user.js`: produção;
-- `dist/baiakidle-bridge.dev.user.js`: loader de desenvolvimento.
-
-Para editar a extensão continuamente:
-
-1. Execute `npm run build` uma vez e instale `dist/baiakidle-bridge.dev.user.js`.
-2. Desative a bridge de produção no Tampermonkey.
-3. Execute:
+Comandos principais:
 
 ```bash
-npm run dev
+npm run dev          # watch do bundle DEV e servidor local na porta 8947
+npm run build        # bridge + servidor MCP
+npm run build:bridge # bundles da bridge e cópia para mcp-extension
+npm run build:mcp    # servidor Node.js
+npm run typecheck    # valida os dois projetos TypeScript
+npm test             # smoke test do servidor WS/RPC
 ```
 
-O bundle recompila em watch mode e é servido em `http://127.0.0.1:8947`. Recarregar a página busca a versão atual sem reinstalar o userscript. A porta `8947` foi separada da porta `8946` usada pelo modo de desenvolvimento do Helper.
-
-Comandos:
-
-```bash
-npm run dev             # bridge em watch mode + servidor local 8947
-npm run build           # compila bridge e servidor MCP
-npm run build:bridge    # compila apenas os userscripts
-npm run build:mcp       # compila apenas o servidor Node.js
-npm run typecheck       # valida os dois projetos TypeScript
-```
-
-## Eventos e configuração
-
-As últimas 2.000 capturas ficam somente em memória e são descartadas quando o servidor MCP encerra. Nenhum pacote é gravado em arquivo.
-
-A porta pode ser alterada com `BAIAKIDLE_BRIDGE_PORT`; mantenha o mesmo valor no userscript. Para diagnosticar apenas o transporte local, abra `http://127.0.0.1:8945/status` enquanto o servidor estiver ativo.
-
-## Solução de problemas
-
-### A extensão mostra falha em `ws://127.0.0.1:8945/browser`
-
-- confirme que o Codex iniciou o MCP e que o caminho no `config.toml` existe;
-- execute `npm run build` novamente;
-- verifique se outro processo já está usando a porta `8945`;
-- reinicie o Codex e depois recarregue a página.
-
-### O userscript DEV não carrega
-
-Execute `npm run dev` neste repositório e confirme que a porta é `8947`. O loader DEV não usa a porta `8945` para servir JavaScript.
-
-### Os WebSockets não aparecem
-
-A bridge precisa executar em `document-start`. Confirme que o script está ativado, que **Allow User Scripts** está habilitado e faça uma recarga completa da página.
+O modo `npm run dev` é opcional e serve o userscript DEV em `127.0.0.1:8947` para quem estiver desenvolvendo o hook com Tampermonkey. Não use o userscript de produção ou o DEV junto com a extensão: dois hooks de WebSocket geram capturas duplicadas.
 
 ## Segurança e privacidade
 
-As capturas em memória podem conter identificadores de sessão, conteúdo da página e dados enviados pelo jogo. Não publique logs ou dumps do navegador e revise sempre `git status` antes de fazer commit.
+- O servidor escuta somente em `127.0.0.1`.
+- O WebSocket aceita a extensão do navegador; o endpoint HTTP não libera CORS para sites arbitrários.
+- A bridge limita o tamanho de frames, requisições RPC e tempo de espera.
+- Capturas ficam em memória e podem conter dados da sessão ou da página; não publique dumps do navegador.
+- `dom_eval`, `reload_page` e `send_packet` têm efeitos reais. Use-os apenas na sua própria conta e com um cliente MCP confiável.
 
-`send_raw_packet` modifica a sessão atual. Use apenas na sua própria conta, com pacotes que você compreende, e respeite as regras do jogo. Este é um projeto independente, sem vínculo oficial com BaiakIdle.
+Este é um projeto independente e não possui vínculo oficial com o BaiakIdle.
+
+## Solução de problemas
+
+### `browserConnected` está `false`
+
+Confirme que o servidor MCP foi iniciado, que a extensão está habilitada e que o caminho configurado aponta para `mcp-server/dist/index.js`. Depois, recarregue a extensão e a página `/jogar/`.
+
+### A extensão não aparece no jogo
+
+Verifique se a pasta selecionada foi exatamente `mcp-extension`, se o modo desenvolvedor está ativo e se a URL é `https://baiakidle.com/jogar/`. Uma recarga completa da página é necessária depois de recompilar.
+
+### Os pacotes não aparecem
+
+Desative qualquer userscript antigo da BaiakIdle MCP Bridge. O hook precisa entrar em `document-start`; abra a página com a extensão já carregada e confira no console se aparece `ext-transport`.
+
+### O modo DEV não carrega
+
+Execute `npm run dev`, confirme que `127.0.0.1:8947` está acessível e instale somente `dist/baiakidle-bridge.dev.user.js` no Tampermonkey. Esse modo é exclusivo para desenvolvimento.
 
 ## Licença
 
