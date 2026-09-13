@@ -1,13 +1,3 @@
-// ==UserScript==
-// @name BaiakIdle MCP Bridge
-// @namespace baiakidle-page-bridge
-// @version 1.2.0
-// @description Page hook only. Transporte é a extensão Chrome (mcp-extension).
-// @match https://baiakidle.com/jogar/
-// @match https://baiakidle.com/jogar/*
-// @run-at document-start
-// @grant unsafeWindow
-// ==/UserScript==
 (function() {
   "use strict";
   const INCOMING = {

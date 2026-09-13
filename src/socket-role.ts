@@ -48,7 +48,7 @@ export function observeSocket(role: SocketRole, bytes: Uint8Array): void {
     return;
   }
 
-  const sample = decoder.decode(bytes.subarray(0, 4_096)).toLowerCase();
+  const sample = decoder.decode(bytes.subarray(0, Math.min(bytes.length, 128))).toLowerCase();
   for (const signal of gameplaySignals) {
     if (sample.includes(signal) && !role.signals.has(signal)) {
       role.signals.add(signal);

@@ -3,101 +3,239 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BrowserBridge } from "./bridge.js";
+import { listKnownMessages } from "./protocol/catalog.js";
+process.on("uncaughtException", error => console.error("[baiakidle-mcp] uncaughtException:", error));
+process.on("unhandledRejection", reason => console.error("[baiakidle-mcp] unhandledRejection:", reason));
 const bridge = new BrowserBridge();
 const tools = [
     {
         name: "bridge_status",
-        description: "Mostra o estado da conexão local entre o servidor MCP e a bridge do navegador.",
+        description: "Estado da bridge local (WS 8945) e, se conectada, snapshot leve da página.",
         inputSchema: { type: "object", properties: {} }
     },
     {
-        name: "list_events",
-        description: "Lista os eventos mais recentes da página, fetch/XHR, inventário e WebSockets.",
-        inputSchema: {
-            type: "object",
-            properties: { limit: { type: "number", minimum: 1, maximum: 2000, default: 100 } }
-        }
-    },
-    {
-        name: "clear_events",
-        description: "Limpa os eventos capturados em memória.",
-        inputSchema: { type: "object", properties: {} }
-    },
-    {
-        name: "get_page_snapshot",
-        description: "Obtém um snapshot atual da página: HTML, texto, links, formulários, scripts e viewport.",
-        inputSchema: { type: "object", properties: {} }
-    },
-    {
-        name: "inspect_selector",
-        description: "Inspeciona elementos atuais da página usando um seletor CSS.",
+        name: "probe",
+        description: "Um probe compacto (HUD + pacotes recentes + DOM opcional). Prefira isto a várias leituras largas.",
         inputSchema: {
             type: "object",
             properties: {
-                selector: { type: "string", description: "Seletor CSS válido." },
-                limit: { type: "number", minimum: 1, maximum: 100, default: 20 }
+                dom: {
+                    type: "object",
+                    properties: {
+                        selector: { type: "string" },
+                        limit: { type: "number" },
+                        html: { type: "boolean" }
+                    }
+                },
+                packets: {
+                    type: "object",
+                    properties: {
+                        msgType: { type: "string" },
+                        msgTypes: { type: "array", items: { type: "string" } },
+                        direction: { type: "string", enum: ["incoming", "outgoing"] },
+                        name: { type: "string" },
+                        limit: { type: "number" },
+                        since: { type: "number" }
+                    }
+                }
+            }
+        }
+    },
+    {
+        name: "packets_get",
+        description: "Lê o ring buffer in-page (pull, como o Luminus). Nada é empurrado da página. Default limit=10.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                msgType: { type: "string" },
+                msgTypes: { type: "array", items: { type: "string" } },
+                categories: { type: "array", items: { type: "string" } },
+                direction: { type: "string", enum: ["incoming", "outgoing"] },
+                name: { type: "string" },
+                limit: { type: "number", minimum: 1, maximum: 100, default: 10 },
+                since: { type: "number" }
+            }
+        }
+    },
+    {
+        name: "list_events",
+        description: "Alias de packets_get (compat).",
+        inputSchema: {
+            type: "object",
+            properties: {
+                msgTypes: { type: "array", items: { type: "string" } },
+                categories: { type: "array", items: { type: "string" } },
+                limit: { type: "number", minimum: 1, maximum: 100, default: 10 }
+            }
+        }
+    },
+    {
+        name: "packets_clear",
+        description: "Limpa o ring buffer na página.",
+        inputSchema: { type: "object", properties: {} }
+    },
+    {
+        name: "clear_events",
+        description: "Alias de packets_clear (compat).",
+        inputSchema: { type: "object", properties: {} }
+    },
+    {
+        name: "list_packet_headers",
+        description: "Catálogo local de message types Colyseus (name + category + spam).",
+        inputSchema: { type: "object", properties: {} }
+    },
+    {
+        name: "dom_query",
+        description: "Query CSS na página. Resumo compacto (tag/id/classes/texto). html:true só em seletor estreito.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                selector: { type: "string" },
+                limit: { type: "number", minimum: 1, maximum: 50, default: 10 },
+                html: { type: "boolean", default: false }
             },
             required: ["selector"]
         }
     },
     {
-        name: "reload_page",
-        description: "Solicita que a bridge recarregue a página BaiakIdle monitorada.",
+        name: "inspect_selector",
+        description: "Alias de dom_query (compat).",
+        inputSchema: {
+            type: "object",
+            properties: {
+                selector: { type: "string" },
+                limit: { type: "number", minimum: 1, maximum: 50, default: 10 }
+            },
+            required: ["selector"]
+        }
+    },
+    {
+        name: "dom_eval",
+        description: "Executa JS no contexto da página (/jogar). Use return para devolver valor. Resultado compactado.",
+        inputSchema: {
+            type: "object",
+            properties: { code: { type: "string" } },
+            required: ["code"]
+        }
+    },
+    {
+        name: "get_page_snapshot",
+        description: "Snapshot leve: URL, HUD (inv/backpack), sockets. Sem HTML da página.",
         inputSchema: { type: "object", properties: {} }
     },
     {
-        name: "send_raw_packet",
-        description: "Envia um pacote binário Base64 pelo WebSocket de gameplay identificado pela bridge.",
+        name: "reload_page",
+        description: "Recarrega https://baiakidle.com/jogar/.",
+        inputSchema: { type: "object", properties: {} }
+    },
+    {
+        name: "send_packet",
+        description: "Envia Base64 no WebSocket de gameplay.",
         inputSchema: {
             type: "object",
             properties: {
                 base64: { type: "string" },
-                targetHost: { type: "string", description: "Host opcional para restringir o socket de destino." }
+                targetHost: { type: "string" }
+            },
+            required: ["base64"]
+        }
+    },
+    {
+        name: "send_raw_packet",
+        description: "Alias de send_packet (compat).",
+        inputSchema: {
+            type: "object",
+            properties: {
+                base64: { type: "string" },
+                targetHost: { type: "string" }
             },
             required: ["base64"]
         }
     }
 ];
-const server = new Server({ name: "baiakidle-page-bridge", version: "1.0.0" }, { capabilities: { tools: {} } });
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    try {
-        const args = (request.params.arguments ?? {});
-        let result;
-        if (request.params.name === "bridge_status") {
-            result = bridge.status();
+const server = new Server({ name: "baiakidle-page-bridge", version: "1.2.0" }, { capabilities: { tools: {} } });
+function asStringArray(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value.map(v => String(v)).filter(Boolean);
+}
+async function callTool(name, args) {
+    switch (name) {
+        case "bridge_status": {
+            const local = bridge.status();
+            if (!bridge.connected())
+                return local;
+            try {
+                return { ...local, page: await bridge.request("status", {}, 4_000) };
+            }
+            catch (error) {
+                return { ...local, pageError: error instanceof Error ? error.message : String(error) };
+            }
         }
-        else if (request.params.name === "list_events") {
-            result = bridge.list(Number(args.limit ?? 100));
+        case "probe": {
+            const params = {};
+            if (args.dom && typeof args.dom === "object")
+                params.dom = args.dom;
+            if (args.packets && typeof args.packets === "object")
+                params.packets = args.packets;
+            return bridge.request("probe", params);
         }
-        else if (request.params.name === "clear_events") {
-            bridge.clear();
-            result = { cleared: true };
-        }
-        else if (request.params.name === "get_page_snapshot") {
-            result = await bridge.requestEvent({ type: "snapshot_page" });
-        }
-        else if (request.params.name === "inspect_selector") {
-            result = await bridge.requestEvent({
-                type: "inspect_selector",
-                selector: String(args.selector),
-                limit: Number(args.limit ?? 20)
+        case "packets_get":
+        case "list_events":
+            return bridge.request("packets.get", {
+                msgType: args.msgType !== undefined ? String(args.msgType) : undefined,
+                msgTypes: asStringArray(args.msgTypes),
+                categories: asStringArray(args.categories),
+                direction: args.direction !== undefined ? String(args.direction) : undefined,
+                name: args.name !== undefined ? String(args.name) : undefined,
+                limit: args.limit !== undefined ? Number(args.limit) : 10,
+                since: args.since !== undefined ? Number(args.since) : undefined
             });
-        }
-        else if (request.params.name === "reload_page") {
-            result = await bridge.enqueue({ type: "reload_page" });
-        }
-        else if (request.params.name === "send_raw_packet") {
-            result = await bridge.requestEvent({
-                type: "send_raw_packet",
+        case "packets_clear":
+        case "clear_events":
+            return bridge.request("packets.clear");
+        case "list_packet_headers":
+            return {
+                protocol: "colyseus-room-data-string-types",
+                note: "BaiakIdle uses string message names after 0x0d, not numeric Habbo headers.",
+                messages: listKnownMessages()
+            };
+        case "dom_query":
+        case "inspect_selector":
+            return bridge.request("dom.query", {
+                selector: String(args.selector),
+                limit: Number(args.limit ?? 10),
+                html: Boolean(args.html)
+            });
+        case "dom_eval":
+            return bridge.request("dom.eval", { code: String(args.code) });
+        case "get_page_snapshot":
+            return bridge.request("snapshot");
+        case "reload_page":
+            return bridge.request("reload");
+        case "send_packet":
+        case "send_raw_packet":
+            return bridge.request("packets.send", {
                 base64: String(args.base64),
                 targetHost: args.targetHost ? String(args.targetHost) : undefined
             });
+        default:
+            throw new Error(`Ferramenta desconhecida: ${name}`);
+    }
+}
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    try {
+        const result = await callTool(request.params.name, (request.params.arguments ?? {}));
+        let text = JSON.stringify(result);
+        if (text.length > 24_000) {
+            text = JSON.stringify({
+                error: "response_too_large",
+                chars: text.length,
+                hint: "Reduza limit/filtros"
+            });
         }
-        else {
-            throw new Error(`Ferramenta desconhecida: ${request.params.name}`);
-        }
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return { content: [{ type: "text", text }] };
     }
     catch (error) {
         return {

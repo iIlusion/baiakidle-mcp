@@ -1,6 +1,6 @@
 {
   "name": "baiakidle-mcp",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Local MCP bridge for inspecting the BaiakIdle page and WebSocket traffic.",
   "type": "module",
   "repository": {

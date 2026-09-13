@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "BaiakIdle MCP Bridge",
+  "version": "1.2.0",
+  "description": "Transporte local (background WS) entre /jogar e o MCP. Igual ao Luminus: a página não fala com 127.0.0.1.",
+  "permissions": ["alarms"],
+  "host_permissions": [
+    "http://127.0.0.1:8945/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://baiakidle.com/jogar",
+        "https://baiakidle.com/jogar/*",
+        "https://www.baiakidle.com/jogar",
+        "https://www.baiakidle.com/jogar/*"
+      ],
+      "js": ["page.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://baiakidle.com/jogar",
+        "https://baiakidle.com/jogar/*",
+        "https://www.baiakidle.com/jogar",
+        "https://www.baiakidle.com/jogar/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

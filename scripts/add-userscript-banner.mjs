@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
 
 const common = `// @match https://baiakidle.com/jogar/
 // @match https://baiakidle.com/jogar/*
@@ -6,8 +6,8 @@ const common = `// @match https://baiakidle.com/jogar/
 const banner = `// ==UserScript==
 // @name BaiakIdle MCP Bridge
 // @namespace baiakidle-page-bridge
-// @version 1.0.0
-// @description Local page and WebSocket bridge for Codex MCP tools.
+// @version 1.2.0
+// @description Page hook only. Transporte é a extensão Chrome (mcp-extension).
 ${common}
 // @grant unsafeWindow
 // ==/UserScript==
@@ -15,12 +15,10 @@ ${common}
 const devLoader = `// ==UserScript==
 // @name BaiakIdle MCP Bridge DEV
 // @namespace baiakidle-page-bridge
-// @version 1.0.0-dev
+// @version 1.2.0-dev
 ${common}
 // @sandbox raw
-// @grant GM_xmlhttpRequest
 // @grant unsafeWindow
-// @connect 127.0.0.1
 // @downloadURL none
 // @updateURL none
 // ==/UserScript==
@@ -45,20 +43,7 @@ ${common}
         : new NativeWebSocket(url, protocols);
       if (!monitored.test(String(url))) return socket;
 
-      const record = { url: String(url), socket, events: [], dispatch: null };
-      const capture = event => {
-        if (record.dispatch) record.dispatch(event);
-        else if (record.events.length < 500) record.events.push(event);
-      };
-      socket.addEventListener("message", event => capture({ type: "message", data: event.data }));
-      socket.addEventListener("close", event => capture({ type: "close", code: event.code, reason: event.reason }));
-      socket.addEventListener("error", () => capture({ type: "error" }));
-
-      const nativeSend = socket.send;
-      socket.send = function (data) {
-        capture({ type: "send", data });
-        nativeSend.call(this, data);
-      };
+      const record = { url: String(url), socket };
 
       records.push(record);
       for (const subscriber of subscribers) subscriber(record);
@@ -98,6 +83,7 @@ ${common}
 `;
 
 const file = "dist/baiakidle-bridge.user.js";
+await copyFile(file, "mcp-extension/page.js");
 await Promise.all([
   writeFile(file, banner + await readFile(file, "utf8")),
   writeFile("dist/baiakidle-bridge.dev.user.js", devLoader)
